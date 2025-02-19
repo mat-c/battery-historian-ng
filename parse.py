@@ -3,6 +3,8 @@
 # vim: tabstop=4 shiftwidth=4 expandtab
 
 import sys
+#for sort
+from operator import itemgetter
 #for debug
 import datetime
 
@@ -110,9 +112,9 @@ class EventType:
 
     def ts_check(self, ts):
         print(f"ts {ts} {self.last_ts} {ts - self.last_ts}", file=sys.stderr)
-        #assert(ts >= self.last_ts)
         if ts < self.last_ts:
             print(f"ts back {ts} {self.last_ts} {ts - self.last_ts}", file=sys.stderr)
+        #assert(ts >= self.last_ts)
         self.last_ts = ts
 
     def end(self, trace_out, time):
@@ -393,6 +395,7 @@ class BatteryStats:
     def __init__(self):
         self.trace_ctx = TraceContext(TraceOutPerfettoJson())
         self.pool = []
+        self.history_data = []
         self.cat_prio = (
                 ('running', 1.0),
                 ('others', 2.0),
@@ -467,7 +470,7 @@ class BatteryStats:
             print(f"{event.name()} {event.cat()}, {event.position()}", file=sys.stderr)
 
         #time in us
-        self.time = 0
+        self.time_offset = 0
         self.time_last_event = 0
 
     def find_event(self, key):
@@ -479,32 +482,20 @@ class BatteryStats:
         for key in self.events:
             self.events[key].end(self.trace_ctx, time)
 
-    def parse(self):
+    def parse_history(self):
+        #self.history_data = sorted(self.history_data, key=itemgetter(0))
         print("[")
-        for v in self.cat_prio:
-            cat_name, cat_prio = v
-            print(f"{cat_name} {cat_prio}", file=sys.stderr)
-            #self.trace_ctx.trace_out.cat_prio(cat_name, cat_prio)
+        for etime, line in self.history_data:
 
-        for line in sys.stdin:
-            line = line[:-1]
-            if line[len(line)-1] == "\r":
-                line = line[:-1]
-            if line.startswith("9,hsp"):
-                split = line.split(',', 4)
-                assert(len(split) == 5)
-                #is array more efficient than dict ???
-                #could be .append (should be in order)
-                self.pool.insert(int(split[2]), (split[3], split[4]))
-            elif line.startswith("9,h,"):
                 split = line.split(',')
-                if len(split) == 3:
-                    #command or only time update
-                    ssplit = split[2].split(':')
-                    #account time
-                    timedelta = int(ssplit[0]) * 1000
-                    self.time += timedelta
+                utctime = etime + self.time_offset
 
+                #assert(utctime >= self.time_last_event)
+
+                if len(split) == 3:
+                    ssplit = split[2].split(':')
+
+                    timedelta = int(ssplit[0]) * 1000
                     #iterate over other arg
                     iterator = iter(ssplit[1:])
                     try:
@@ -514,48 +505,35 @@ class BatteryStats:
                                 #do nothing
                                 element = ""
                             elif element == "START":
-                                self.end_events(self.time)
+                                self.end_events(utctime)
                             elif element == "TIME":
                                 #time in ms. convert it to us
                                 #XXX battery historian seem to remove timedelta for computed time !!!!
                                 new_time = int(next(iterator)) * 1000
-                                print(f"time:{self.time} new_time:{new_time} diff:{new_time-self.time}", file=sys.stderr)
-                                if self.time == 0:
-                                    self.time = new_time
+                                print(f"time:{utctime} new_time:{new_time} diff:{new_time-utctime}", file=sys.stderr)
+                                if utctime == 0:
+                                    utctime = new_time
 
                                 #assert(new_time > self.time - timedelta)
-                                if new_time < self.time - timedelta:
+                                if new_time < utctime - timedelta:
                                 #if new_time < self.time_last_event:
                                     ### XXX backward time not supported
                                     #ignore new time setting in that case ???
-                                    self.trace_ctx.trace_out.simple_event2(self.time, "set time", f"past : {(new_time - self.time)/1000000} {timedelta/1000000}", cat = "running")
-                                    new_time = self.time
-                                elif new_time == self.time:
+                                    self.trace_ctx.trace_out.simple_event2(utctime, "set time", f"past : {(new_time - utctime)/1000000} {timedelta/1000000}", cat = "running")
+                                    new_time = utctime
+                                elif new_time == utctime:
                                     self.trace_ctx.trace_out.simple_event2(new_time, "set time", "same", cat = "running")
-                                elif new_time < self.time:
-                                    self.trace_ctx.trace_out.simple_event(new_time, "set time", True, "running", subname = f"back {(new_time - self.time)/1000000}")
-                                    self.trace_ctx.trace_out.simple_event(self.time, "set time", False, "running")
+                                elif new_time < utctime:
+                                    self.trace_ctx.trace_out.simple_event(new_time, "set time", True, "running", subname = f"back {(new_time - utctime)/1000000}")
+                                    self.trace_ctx.trace_out.simple_event(utctime, "set time", False, "running")
                                 else:
-                                    self.trace_ctx.trace_out.simple_event(self.time, "set time", True, "running", subname = f"advance {(new_time - self.time)/1000000}")
+                                    self.trace_ctx.trace_out.simple_event(utctime, "set time", True, "running", subname = f"advance {(new_time - utctime)/1000000}")
                                     self.trace_ctx.trace_out.simple_event(new_time, "set time", False, "running")
-                                self.time = new_time
+                                self.time_offset = new_time - etime
 
                     except StopIteration:
                         pass
                 else:
-                    #event
-                    assert(len(split) >= 4)
-                    timedelta = int(split[2]) * 1000
-                    #assert(self.time + timedelta >= self.time_last_event)
-
-                    self.time += timedelta
-                    etime = self.time
-                    if etime < self.time_last_event:
-                        print(f"time back {etime} {self.time_last_event} {etime - self.time_last_event} {line}", file=sys.stderr)
-                        #etime = self.time_last_event
-                        #self.trace_out.simple_event2(etime, "ts error", "past", cat = "running")
-
-
                     if split[3].startswith("Dpst="):
                         #XXX this event is split by ','
                         #make it split by ':'
@@ -568,8 +546,8 @@ class BatteryStats:
                     try:
                         while True:
                             element = next(iterator)
-                            date = datetime.datetime.fromtimestamp(self.time/1000000, datetime.timezone(datetime.timedelta(minutes=0)))
-                            print(f"time:{self.time} event:{element} {date} {line}", file=sys.stderr)
+                            date = datetime.datetime.fromtimestamp(utctime/1000000, datetime.timezone(datetime.timedelta(minutes=0)))
+                            print(f"time:{utctime} event:{element} {date} {line}", file=sys.stderr)
 
                             ssplit = element.split("=", 1)
 
@@ -595,13 +573,52 @@ class BatteryStats:
 
                             event = self.find_event(key)
 
-                            event.process(self.trace_ctx, etime, start_nstop, val)
+                            event.process(self.trace_ctx, utctime, start_nstop, val)
 
-                            self.time_last_event = etime
+                            self.time_last_event = utctime
 
                     except StopIteration:
                         pass
-        self.end_events(etime)
+        self.end_events(self.time_last_event)
         print("]")
+
+    def parse(self):
+        time = 0
+
+        for v in self.cat_prio:
+            cat_name, cat_prio = v
+            print(f"{cat_name} {cat_prio}", file=sys.stderr)
+            #self.trace_ctx.trace_out.cat_prio(cat_name, cat_prio)
+
+        for line in sys.stdin:
+            line = line[:-1]
+            if line[len(line)-1] == "\r":
+                line = line[:-1]
+            if line.startswith("9,hsp"):
+                split = line.split(',', 4)
+                assert(len(split) == 5)
+                #is array more efficient than dict ???
+                #could be .append (should be in order)
+                self.pool.insert(int(split[2]), (split[3], split[4]))
+            elif line.startswith("9,h,"):
+                split = line.split(',')
+                if len(split) == 3:
+                    #command or only time update
+                    ssplit = split[2].split(':')
+                    #account time
+                    timedelta = int(ssplit[0]) * 1000
+                    time += timedelta
+                    self.history_data.append((time, line))
+                else:
+                    #event
+                    assert(len(split) >= 4)
+                    timedelta = int(split[2]) * 1000
+
+                    time += timedelta
+                    self.history_data.append((time, line))
+        #a second pass is needed : event are not in order in recent android version
+        self.parse_history()
+
+
 
 BatteryStats().parse()
