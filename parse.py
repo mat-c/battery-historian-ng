@@ -82,6 +82,7 @@ class TraceContext:
     def __init__(self, trace_out):
         self.trace_out = trace_out
         self.state_run = False
+        self.stop_run_ts = 0
         self.state_wl = False
 
 
@@ -110,6 +111,12 @@ class EventType:
         print(f"decode val {val} {dval}", file=sys.stderr)
         return dval
 
+    def assert_warn(self, cond, trace_ctx, time, msg):
+        if False:
+            assert(cond)
+        elif not cond:
+            trace_ctx.trace_out.simple_event2(time, "assert", msg, cat = "errors")
+
     def ts_check(self, ts):
         print(f"ts {ts} {self.last_ts} {ts - self.last_ts}", file=sys.stderr)
         if ts < self.last_ts:
@@ -126,6 +133,7 @@ class EventStartStopSingle(EventType):
         self.is_started = False
         self.last_active = None
     def process(self, trace_ctx, time, start_nstop, val):
+        self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         #at trace startup we have initial state without +/-
         if start_nstop == None:
@@ -140,7 +148,9 @@ class EventStartStopSingle(EventType):
         if not start_nstop:
             assert(val == self.last_active)
 
+        #we should not have 2 start or 2 stop
         assert(self.is_started != start_nstop)
+
         #some trace have some missmatch event !
         #if self.is_started == start_nstop:
         #    trace_out.simple_event(time, self.name(), not self.is_started, self.cat(), None)
@@ -162,6 +172,7 @@ class EventStartStopMulti(EventType):
         self.active_event = {}
         self.async_ids = IdAllocator()
     def process(self, trace_ctx, time, start_nstop, val):
+        self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         #at trace startup we have initial state without +/-
         if start_nstop == None:
@@ -170,10 +181,12 @@ class EventStartStopMulti(EventType):
         dval = self.decode_val(val)
 
         if start_nstop:
+            #no repeated start
             assert(dval not in self.active_event)
             event_id = self.async_ids.get_id()
             self.active_event[dval] = event_id
         else:
+            #no repeated stop
             assert(dval in self.active_event)
             event_id = self.active_event.pop(dval)
             self.async_ids.release_id(event_id)
@@ -194,6 +207,7 @@ class EventVal(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
     def process(self, trace_ctx, time, start_nstop, val):
+        #self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         assert(start_nstop == None)
         trace_ctx.trace_out.simple_event2(time, self.name(), self.decode_val(val), cat = self.cat())
@@ -205,6 +219,7 @@ class EventState(EventType):
         self.off_name = off_name
         self.last_state = None
     def process(self, trace_ctx, time, start_nstop, val):
+        self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         assert(start_nstop == None)
         #first clear last event
@@ -226,6 +241,7 @@ class EventCount(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
     def process(self, trace_ctx, time, start_nstop, val):
+        #self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         assert(start_nstop == None)
         trace_ctx.trace_out.simple_count(time, self.name(), self.decode_val(val), cat = self.cat())
@@ -267,10 +283,6 @@ class EventWakeLock(EventStartStopSingle):
         #if start_nstop and dval in self.active_event:
         #    return
 
-        #sometimes we got -r,-w. We can only check enter case.
-        if start_nstop:
-            assert(trace_ctx.state_run) 
-
         super().process(trace_ctx, time, start_nstop, val)
         if dval is not None and start_nstop and "alarm*:" in dval:
             trace_ctx.trace_out.simple_event2(time, dval, "pending", cat = "alarm")
@@ -280,13 +292,23 @@ class EventRun(EventStartStopSingle):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
     def process(self, trace_ctx, time, start_nstop, val):
-        super().process(trace_ctx, time, start_nstop, val)
+        assert(trace_ctx.stop_run_ts == 0)
+
+        #no two consecutive start or stop
+        self.assert_warn(trace_ctx.state_run!=start_nstop, trace_ctx, time, f"invalid run state {start_nstop}")
+        if trace_ctx.state_run == start_nstop:
+            return
 
         if start_nstop:
-            #assert(not trace_ctx.state_wl)
-            if trace_ctx.state_wl:
-                print(f"missing wake {time}", file=sys.stderr)
-        trace_ctx.state_run = start_nstop
+            #no wake lock before run start
+            self.assert_warn(not trace_ctx.state_wl, trace_ctx, time, "wake lock before run")
+            trace_ctx.state_run = True
+            trace_ctx.stop_run_ts = 0
+
+        super().process(trace_ctx, time, start_nstop, val)
+
+        if not start_nstop:
+            trace_ctx.stop_run_ts = time
 
 class EventWakeReason(EventVal):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
@@ -483,7 +505,7 @@ class BatteryStats:
             self.events[key].end(self.trace_ctx, time)
 
     def parse_history(self):
-        #self.history_data = sorted(self.history_data, key=itemgetter(0))
+        self.history_data = sorted(self.history_data, key=itemgetter(0))
         print("[")
         for etime, line in self.history_data:
 
@@ -541,6 +563,13 @@ class BatteryStats:
                         tmp = tmp.replace(",", ":")
                         tmp = "a,b,c," + tmp
                         split = tmp.split(',')
+
+                    #switch run state after we process all even with same ts
+                    if self.trace_ctx.stop_run_ts != 0 and self.trace_ctx.stop_run_ts < utctime:
+                        self.trace_ctx.stop_run_ts = 0
+                        self.trace_ctx.state_run = False
+                        #there should be no active wakelock
+                        assert(not self.trace_ctx.state_wl)
 
                     iterator = iter(split[3:])
                     try:
