@@ -121,7 +121,7 @@ class EventType:
         print(f"ts {ts} {self.last_ts} {ts - self.last_ts}", file=sys.stderr)
         if ts < self.last_ts:
             print(f"ts back {ts} {self.last_ts} {ts - self.last_ts}", file=sys.stderr)
-        #assert(ts >= self.last_ts)
+        assert(ts >= self.last_ts)
         self.last_ts = ts
 
     def end(self, trace_out, time):
@@ -199,6 +199,40 @@ class EventStartStopMulti(EventType):
             event_id = self.active_event[dval]
             trace_ctx.trace_out.simple_event(time, f"{self.name()}_{event_id}", False, self.cat(), subname = dval)
             self.async_ids.release_id(event_id)
+            #print(ev, file=sys.stderr)
+        self.active_event.clear()
+
+class EventStartStopMultiByName(EventType):
+    def __init__(self, long_name, position, cat = 'other', decode_val = None):
+        super().__init__(long_name, position, cat, decode_val)
+        self.active_event = {}
+    def process(self, trace_ctx, time, start_nstop, val):
+        self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
+        super().ts_check(time)
+        #at trace startup we have initial state without +/-
+        if start_nstop == None:
+            start_nstop = True
+
+        dval = self.decode_val(val)
+        #dval = ":".join(ddval.split(':')[1:])
+
+        if start_nstop:
+            #no repeated start
+            assert(dval not in self.active_event)
+            self.active_event[dval] = True
+        else:
+            #no repeated stop
+            assert(dval in self.active_event)
+            self.active_event.pop(dval)
+            #None
+
+        #chrome async event do not do what we whant, use simple event
+        #trace_out.async_event(time, self.name(), self.decode_val(val), start_nstop)
+        trace_ctx.trace_out.simple_event(time, f"{dval}", start_nstop, self.cat(), subname = ddval)
+    def end(self, trace_ctx, time):
+        for dval in self.active_event:
+            self.active_event[dval]
+            trace_ctx.trace_out.simple_event(time, f"{dval}", False, self.cat(), subname = None)
             #print(ev, file=sys.stderr)
         self.active_event.clear()
 
