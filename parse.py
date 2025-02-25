@@ -132,17 +132,16 @@ class EventStartStopSingle(EventType):
         super().__init__(long_name, position, cat, decode_val)
         self.is_started = False
         self.last_active = None
+        self.init = True
     def process(self, trace_ctx, time, start_nstop, val):
         self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
+
         #at trace startup we have initial state without +/-
         if start_nstop == None:
+            assert(self.init)
             start_nstop = True
-
-        dval = self.decode_val(val)
-
-        #if not start_nstop and dval is None:
-        #    dval = self.last_active
+        self.init = False
 
         #stop should match start value
         if not start_nstop:
@@ -171,12 +170,16 @@ class EventStartStopMulti(EventType):
         super().__init__(long_name, position, cat, decode_val)
         self.active_event = {}
         self.async_ids = IdAllocator()
+        self.init = True
     def process(self, trace_ctx, time, start_nstop, val):
         self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         #at trace startup we have initial state without +/-
         if start_nstop == None:
+            assert(self.init)
             start_nstop = True
+        else:
+            self.init = False
 
         dval = self.decode_val(val)
 
@@ -305,6 +308,11 @@ class EventWakeLock(EventStartStopSingle):
         super().__init__(long_name, position, cat, decode_val)
         self.last_active = None
     def process(self, trace_ctx, time, start_nstop, val):
+        if start_nstop == None:
+            #XXX what to do here ???
+            self.assert_warn(False, trace_ctx, time, f"single wakelock {self.decode_val(val)}")
+            return
+
         #if not start_nstop and val is None:
         if not start_nstop:
             val = None
@@ -571,8 +579,8 @@ class BatteryStats:
                                     utctime = new_time
 
                                 #assert(new_time > self.time - timedelta)
-                                if new_time < utctime - timedelta:
-                                #if new_time < self.time_last_event:
+                                #if new_time < utctime - timedelta:
+                                if new_time < self.time_last_event:
                                     ### XXX backward time not supported
                                     #ignore new time setting in that case ???
                                     self.trace_ctx.trace_out.simple_event2(utctime, "set time", f"past : {(new_time - utctime)/1000000} {timedelta/1000000}", cat = "running")
