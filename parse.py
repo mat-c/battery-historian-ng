@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+#
+# Copyright (c) Matthieu Castet <castet.matthieu@free.fr>. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for details.
+#
+
 # vim: tabstop=4 shiftwidth=4 expandtab
 
 import sys
@@ -118,7 +123,7 @@ class EventType:
             trace_ctx.trace_out.simple_event2(time, "assert", msg, cat = "errors")
 
     def ts_check(self, ts):
-        print(f"ts {ts} {self.last_ts} {ts - self.last_ts}", file=sys.stderr)
+        #print(f"ts {ts} {self.last_ts} {ts - self.last_ts}", file=sys.stderr)
         if ts < self.last_ts:
             print(f"ts back {ts} {self.last_ts} {ts - self.last_ts}", file=sys.stderr)
         assert(ts >= self.last_ts)
@@ -133,6 +138,7 @@ class EventStartStopSingle(EventType):
         self.is_started = False
         self.last_active = None
         self.init = True
+
     def process(self, trace_ctx, time, start_nstop, val):
         self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
@@ -150,11 +156,8 @@ class EventStartStopSingle(EventType):
         #we should not have 2 start or 2 stop
         assert(self.is_started != start_nstop)
 
-        #some trace have some missmatch event !
-        #if self.is_started == start_nstop:
-        #    trace_out.simple_event(time, self.name(), not self.is_started, self.cat(), None)
-
         trace_ctx.trace_out.simple_event(time, self.name(), start_nstop, self.cat(), subname = self.decode_val(val))
+
         self.is_started = start_nstop
         if start_nstop:
             self.last_active = val
@@ -171,9 +174,11 @@ class EventStartStopMulti(EventType):
         self.active_event = {}
         self.async_ids = IdAllocator()
         self.init = True
+
     def process(self, trace_ctx, time, start_nstop, val):
         self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
+
         #at trace startup we have initial state without +/-
         if start_nstop == None:
             assert(self.init)
@@ -197,6 +202,7 @@ class EventStartStopMulti(EventType):
         #chrome async event do not do what we whant, use simple event
         #trace_out.async_event(time, self.name(), self.decode_val(val), start_nstop)
         trace_ctx.trace_out.simple_event(time, f"{self.name()}_{event_id}", start_nstop, self.cat(), subname = dval)
+
     def end(self, trace_ctx, time):
         for dval in self.active_event:
             event_id = self.active_event[dval]
@@ -209,15 +215,20 @@ class EventStartStopMultiByName(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
         self.active_event = {}
+        self.init = True
+
     def process(self, trace_ctx, time, start_nstop, val):
         self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
+
         #at trace startup we have initial state without +/-
         if start_nstop == None:
+            assert(self.init)
             start_nstop = True
+        else:
+            self.init = False
 
         dval = self.decode_val(val)
-        #dval = ":".join(ddval.split(':')[1:])
 
         if start_nstop:
             #no repeated start
@@ -227,14 +238,13 @@ class EventStartStopMultiByName(EventType):
             #no repeated stop
             assert(dval in self.active_event)
             self.active_event.pop(dval)
-            #None
 
         #chrome async event do not do what we whant, use simple event
         #trace_out.async_event(time, self.name(), self.decode_val(val), start_nstop)
-        trace_ctx.trace_out.simple_event(time, f"{dval}", start_nstop, self.cat(), subname = ddval)
+        trace_ctx.trace_out.simple_event(time, f"{dval}", start_nstop, self.cat(), subname = dval)
+
     def end(self, trace_ctx, time):
         for dval in self.active_event:
-            self.active_event[dval]
             trace_ctx.trace_out.simple_event(time, f"{dval}", False, self.cat(), subname = None)
             #print(ev, file=sys.stderr)
         self.active_event.clear()
@@ -243,7 +253,9 @@ class EventStartStopMultiByName(EventType):
 class EventVal(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
+
     def process(self, trace_ctx, time, start_nstop, val):
+        #enabling this cause lot's of warn...
         #self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         assert(start_nstop == None)
@@ -255,6 +267,7 @@ class EventState(EventType):
         super().__init__(long_name, position, cat, decode_val)
         self.off_name = off_name
         self.last_state = None
+
     def process(self, trace_ctx, time, start_nstop, val):
         self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
@@ -262,6 +275,7 @@ class EventState(EventType):
         #first clear last event
         if self.last_state != None:
             trace_ctx.trace_out.simple_event(time, self.name(), False, self.cat(), subname = "")
+
         dval = self.decode_val(val)
         if dval == self.off_name:
             self.last_state = None
@@ -277,25 +291,28 @@ class EventState(EventType):
 class EventCount(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
+
     def process(self, trace_ctx, time, start_nstop, val):
         #self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         assert(start_nstop == None)
         trace_ctx.trace_out.simple_count(time, self.name(), self.decode_val(val), cat = self.cat())
+
     def end(self, trace_ctx, time):
         self.process(trace_ctx, time, None, 0)
 
-class EventUnknow(EventType):
+class EventUnknow(EventStartStopMulti):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
+
     def process(self, trace_ctx, time, start_nstop, val):
         super().ts_check(time)
         if start_nstop != None:
             if val == None:
                 trace_ctx.trace_out.simple_event(time, self.name(), start_nstop, self.cat(), subname = self.decode_val(val))
             else:
+                super().process(trace_ctx, time, start_nstop, val)
                 #trace_out.async_event(time, self.name(), self.decode_val(val), start_nstop)
-                pass
         else:
             if self.name()[0] == 'E':
                 trace_ctx.trace_out.simple_event2(time, self.name(), self.decode_val(val), cat = self.cat())
@@ -307,25 +324,23 @@ class EventWakeLock(EventStartStopSingle):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
         self.last_active = None
+
     def process(self, trace_ctx, time, start_nstop, val):
         if start_nstop == None:
             #XXX what to do here ???
             self.assert_warn(False, trace_ctx, time, f"single wakelock {self.decode_val(val)}")
             return
 
-        #if not start_nstop and val is None:
+        #if not start_nstop, make val is None:
+        #TODO report the value in stop (last wakelock taken ???)
         if not start_nstop:
             val = None
         self.last_active = val
         dval = self.decode_val(val)
 
-        #XXX wakelock before trace start ???
-        #if not start_nstop and dval not in self.active_event:
-        #    return
-        #if start_nstop and dval in self.active_event:
-        #    return
-
         super().process(trace_ctx, time, start_nstop, val)
+
+        #generate alarm event by name
         if dval is not None and start_nstop and "alarm*:" in dval:
             trace_ctx.trace_out.simple_event2(time, dval, "pending", cat = "alarm")
         trace_ctx.state_wl = start_nstop
@@ -355,19 +370,13 @@ class EventRun(EventStartStopSingle):
 class EventWakeReason(EventVal):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
+
     def process(self, trace_ctx, time, start_nstop, val):
         super().process(trace_ctx, time, start_nstop, val)
         ddval = self.decode_val(val)
-        dval = ddval.replace("47:glink-native-rpm-glink:", "")
-        if not dval.startswith("0:Abort:"):
-            #XXX
-            dval = dval.replace("44:(unnamed):", "")
-            dval = dval.replace("51:(unnamed):", "")
-            dval = dval.replace("16:mpm:", "")
-            if "slate_spi" not in dval and ":Abort" in dval:
-                pos = dval.rfind(':')
-                dval = dval[0:pos-len(":Abort")]
-            trace_ctx.trace_out.simple_event2(time, dval, ddval, cat = "wake reason")
+        #TODO some custom filter here
+        dval = ddval
+        trace_ctx.trace_out.simple_event2(time, dval, ddval, cat = "wake reason")
 
 class EventCpu(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
@@ -418,6 +427,22 @@ class EventCpuStat(EventType):
             self.cpu_idle.process(trace_ctx, self.last_time, start_nstop, int(split[5]) /time_delta_ms * 100)
             self.cpu_total.process(trace_ctx, self.last_time, start_nstop, total / time_delta_ms * 100)
         self.last_time = time
+
+class EventEstimatedCapacity(EventType):
+    #TODO
+    #seem to provide sensor enabled, but there is no inital state
+    #an event can be stop without a start :/
+    def __init__(self, long_name, position, cat = 'other', decode_val = None):
+        super().__init__(long_name, position, cat, decode_val)
+    def process(self, trace_ctx, time, start_nstop, val):
+        None
+
+class EventProc(EventType):
+    #TODO
+    def __init__(self, long_name, position, cat = 'other', decode_val = None):
+        super().__init__(long_name, position, cat, decode_val)
+    def process(self, trace_ctx, time, start_nstop, val):
+        None
 
 class BatteryStats:
 
@@ -481,6 +506,9 @@ class BatteryStats:
                     'Esy' : EventStartStopMulti('SyncManager', 1.3, cat = 'Sync', decode_val = self.event_decode_val_pool),
                     'Efg' : EventStartStopMulti('Forground app', 1.3, cat = 'fg app', decode_val = self.event_decode_val_pool),
                     'Epi' : EventVal('package install', 1.3, cat = 'misc', decode_val = self.event_decode_val_pool),
+                    'Etw' : EventStartStopMulti('Etw', 1.3, cat = 'other', decode_val = self.event_decode_val_pool),
+                    'Eec' : EventEstimatedCapacity('Eec', 1.3, cat = 'misc', decode_val = self.event_decode_val_pool),
+                    'Epr' : EventProc('Epr', 1.3, cat = 'misc', decode_val = self.event_decode_val_pool),
                     'di' : EventState('doze', 'off', 1.3, cat = 'misc'),
                     #wake
                     'wr' : EventWakeReason('wakeup reason', 1.1, cat = 'running', decode_val = self.event_decode_val_pool),
@@ -571,7 +599,6 @@ class BatteryStats:
                                 self.end_events(utctime)
                             elif element == "TIME":
                                 #time in ms. convert it to us
-                                #XXX battery historian seem to remove timedelta for computed time !!!!
                                 new_time = int(next(iterator)) * 1000
                                 print(f"time:{utctime} new_time:{new_time} diff:{new_time-utctime}", file=sys.stderr)
                                 if utctime == 0:
@@ -593,7 +620,7 @@ class BatteryStats:
                         pass
                 else:
                     if split[3].startswith("Dpst="):
-                        #XXX this event is split by ','
+                        #this event is split by ','
                         #make it split by ':'
                         tmp = ",".join(split[3:])
                         tmp = tmp.replace(",", ":")
