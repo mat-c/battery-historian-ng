@@ -417,8 +417,6 @@ class EventCpuStat(EventType):
             self.cpu_sys.process(trace_ctx, self.last_time, start_nstop, int(split[1])/time_delta_ms * 100)
             self.cpu_idle.process(trace_ctx, self.last_time, start_nstop, int(split[5]) /time_delta_ms * 100)
             self.cpu_total.process(trace_ctx, self.last_time, start_nstop, total / time_delta_ms * 100)
-            #self.cpu_time.process(trace_ctx, self.last_time, start_nstop, time_delta_s*100)
-            #self.cpu_ttime.process(trace_ctx, self.last_time, start_nstop, time / 1000000 *100)
         self.last_time = time
 
 class BatteryStats:
@@ -536,6 +534,7 @@ class BatteryStats:
         #time in us
         self.time_offset = 0
         self.time_last_event = 0
+        self.pending_delta_time_offset = 0
 
     def find_event(self, key):
         if key not in self.events:
@@ -578,18 +577,13 @@ class BatteryStats:
                                 if utctime == 0:
                                     utctime = new_time
 
-                                #assert(new_time > self.time - timedelta)
-                                #if new_time < utctime - timedelta:
-                                if new_time < self.time_last_event:
-                                    ### XXX backward time not supported
-                                    #ignore new time setting in that case ???
-                                    self.trace_ctx.trace_out.simple_event2(utctime, "set time", f"past : {(new_time - utctime)/1000000} {timedelta/1000000}", cat = "running")
-                                    new_time = utctime
-                                elif new_time == utctime:
+                                if abs(new_time - utctime) <= 1000:
                                     self.trace_ctx.trace_out.simple_event2(new_time, "set time", "same", cat = "running")
                                 elif new_time < utctime:
-                                    self.trace_ctx.trace_out.simple_event(new_time, "set time", True, "running", subname = f"back {(new_time - utctime)/1000000}")
-                                    self.trace_ctx.trace_out.simple_event(utctime, "set time", False, "running")
+                                    #backward time are accounted in not running state
+                                    self.trace_ctx.trace_out.simple_event2(utctime, "set time", f"past : {(new_time - utctime)/1000000} {timedelta/1000000}", cat = "running")
+                                    self.pending_delta_time_offset = utctime - new_time
+                                    new_time = utctime
                                 else:
                                     self.trace_ctx.trace_out.simple_event(utctime, "set time", True, "running", subname = f"advance {(new_time - utctime)/1000000}")
                                     self.trace_ctx.trace_out.simple_event(new_time, "set time", False, "running")
@@ -612,6 +606,15 @@ class BatteryStats:
                         self.trace_ctx.state_run = False
                         #there should be no active wakelock
                         assert(not self.trace_ctx.state_wl)
+
+                    if self.pending_delta_time_offset != 0 and \
+                       not self.trace_ctx.state_run and \
+                       utctime - self.time_last_event > self.pending_delta_time_offset:
+                        self.trace_ctx.trace_out.simple_event(utctime - self.pending_delta_time_offset, "set time", True, "running", subname = f"back {self.pending_delta_time_offset/1000000}")
+                        self.trace_ctx.trace_out.simple_event(utctime, "set time", False, "running")
+                        self.time_offset -= self.pending_delta_time_offset
+                        utctime -= self.pending_delta_time_offset
+                        self.pending_delta_time_offset = 0
 
                     iterator = iter(split[3:])
                     try:
