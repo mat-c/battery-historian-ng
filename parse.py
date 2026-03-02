@@ -84,6 +84,11 @@ class TraceOutPerfettoJson:
         print(f"{{\"ph\":\"{event}\", \"pid\": \"{name}\", \"name\":\"process_sort_index\", \"args\":{{\"sort_index\":\"{prio}\"}} }},")
 
 class TraceContext:
+    def reset(self):
+        self.state_run = False
+        self.stop_run_ts = 0
+        self.state_wl = False
+
     def __init__(self, trace_out):
         self.trace_out = trace_out
         self.state_run = False
@@ -167,6 +172,9 @@ class EventStartStopSingle(EventType):
     def end(self, trace_ctx, time):
         if self.is_started:
             self.process(trace_ctx, time, False, self.last_active)
+        self.is_started = False
+        self.last_active = None
+        self.init = True
 
 class EventStartStopMulti(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
@@ -210,6 +218,7 @@ class EventStartStopMulti(EventType):
             self.async_ids.release_id(event_id)
             #print(ev, file=sys.stderr)
         self.active_event.clear()
+        self.init = True
 
 class EventStartStopMultiByName(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
@@ -248,6 +257,7 @@ class EventStartStopMultiByName(EventType):
             trace_ctx.trace_out.simple_event(time, f"{dval}", False, self.cat(), subname = None)
             #print(ev, file=sys.stderr)
         self.active_event.clear()
+        self.init = True
 
 #instant event with val
 class EventVal(EventType):
@@ -291,25 +301,32 @@ class EventState(EventType):
 class EventCount(EventType):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
+        self.val = None
 
     def process(self, trace_ctx, time, start_nstop, val):
         #self.assert_warn(trace_ctx.state_run, trace_ctx, time, f"event {self.name()} when not run")
         super().ts_check(time)
         assert(start_nstop == None)
-        trace_ctx.trace_out.simple_count(time, self.name(), self.decode_val(val), cat = self.cat())
+        self.val = self.decode_val(val)
+        assert(self.val != None)
+        trace_ctx.trace_out.simple_count(time, self.name(), self.val, cat = self.cat())
 
     def end(self, trace_ctx, time):
-        self.process(trace_ctx, time, None, 0)
+        if self.val != None:
+            self.process(trace_ctx, time, None, 0)
+        self.val = None
 
 class EventUnknow(EventStartStopMulti):
     def __init__(self, long_name, position, cat = 'other', decode_val = None):
         super().__init__(long_name, position, cat, decode_val)
+        self.is_started = False
 
     def process(self, trace_ctx, time, start_nstop, val):
         super().ts_check(time)
         if start_nstop != None:
             if val == None:
                 trace_ctx.trace_out.simple_event(time, self.name(), start_nstop, self.cat(), subname = self.decode_val(val))
+                self.is_started = start_nstop
             else:
                 super().process(trace_ctx, time, start_nstop, val)
                 #trace_out.async_event(time, self.name(), self.decode_val(val), start_nstop)
@@ -318,6 +335,10 @@ class EventUnknow(EventStartStopMulti):
                 trace_ctx.trace_out.simple_event2(time, self.name(), self.decode_val(val), cat = self.cat())
             else:
                 trace_ctx.trace_out.simple_event2(time, self.name(), val)
+    def end(self, trace_ctx, time):
+        if self.is_started:
+            trace_ctx.trace_out.simple_event(time, self.name(), False, self.cat(), None)
+            self.is_started = False
 
 #custom event
 class EventWakeLock(EventStartStopSingle):
@@ -572,6 +593,8 @@ class BatteryStats:
     def end_events(self, time):
         for key in self.events:
             self.events[key].end(self.trace_ctx, time)
+        self.trace_ctx.reset()
+        self.time_last_event = time
 
     def parse_history(self):
         self.history_data = sorted(self.history_data, key=itemgetter(0))
@@ -594,8 +617,14 @@ class BatteryStats:
                             element = next(iterator)
                             if element == "RESET":
                                 #do nothing
-                                element = ""
+                                if utctime != 0:
+                                        self.trace_ctx.trace_out.simple_event2(utctime, "action", "reset", cat = "running")
+                                print(f"reset", file=sys.stderr)
+                                self.end_events(utctime)
+                                print(f"reset end", file=sys.stderr)
                             elif element == "START":
+                                if utctime != 0:
+                                        self.trace_ctx.trace_out.simple_event2(utctime, "action", "start", cat = "running")
                                 self.end_events(utctime)
                             elif element == "TIME":
                                 #time in ms. convert it to us
@@ -604,11 +633,12 @@ class BatteryStats:
                                 if utctime == 0:
                                     utctime = new_time
 
-                                if abs(new_time - utctime) <= 1000:
+                                if new_time == utctime:
                                     self.trace_ctx.trace_out.simple_event2(new_time, "set time", "same", cat = "running")
                                 elif new_time < utctime:
                                     #backward time are accounted in not running state
                                     self.trace_ctx.trace_out.simple_event2(utctime, "set time", f"past : {(new_time - utctime)/1000000} {timedelta/1000000}", cat = "running")
+                                    print(f"delay back", file=sys.stderr)
                                     self.pending_delta_time_offset = utctime - new_time
                                     new_time = utctime
                                 else:
