@@ -152,6 +152,8 @@ class EventStartStopSingle(EventType):
         if start_nstop == None:
             assert(self.init)
             start_nstop = True
+        elif self.init and not start_nstop:
+            return
         self.init = False
 
         #stop should match start value
@@ -198,12 +200,18 @@ class EventStartStopMulti(EventType):
 
         if start_nstop:
             #no repeated start
-            assert(dval not in self.active_event)
+            self.assert_warn(dval not in self.active_event, trace_ctx, time, f"event {self.name()} restart")
+            if not dval not in self.active_event:
+                trace_ctx.trace_out.simple_event2(time, f"{self.name()}_restart", dval, cat = self.cat())
+                return
             event_id = self.async_ids.get_id()
             self.active_event[dval] = event_id
         else:
             #no repeated stop
-            assert(dval in self.active_event)
+            self.assert_warn(dval in self.active_event, trace_ctx, time, f"event {self.name()} restop")
+            if not dval in self.active_event:
+                trace_ctx.trace_out.simple_event2(time, f"{self.name()}_restop", dval, cat = self.cat())
+                return
             event_id = self.active_event.pop(dval)
             self.async_ids.release_id(event_id)
 
@@ -241,11 +249,17 @@ class EventStartStopMultiByName(EventType):
 
         if start_nstop:
             #no repeated start
-            assert(dval not in self.active_event)
+            self.assert_warn(dval not in self.active_event, trace_ctx, time, f"event {self.name()} restart")
+            if not dval not in self.active_event:
+                trace_ctx.trace_out.simple_event2(time, f"{self.name()}_restart", dval, cat = self.cat())
+                return
             self.active_event[dval] = True
         else:
             #no repeated stop
-            assert(dval in self.active_event)
+            self.assert_warn(dval in self.active_event, trace_ctx, time, f"event {self.name()} restop")
+            if not dval in self.active_event:
+                trace_ctx.trace_out.simple_event2(time, f"{self.name()}_restop", dval, cat = self.cat())
+                return
             self.active_event.pop(dval)
 
         #chrome async event do not do what we whant, use simple event
@@ -323,6 +337,7 @@ class EventUnknow(EventStartStopMulti):
 
     def process(self, trace_ctx, time, start_nstop, val):
         super().ts_check(time)
+
         if start_nstop != None:
             if val == None:
                 trace_ctx.trace_out.simple_event(time, self.name(), start_nstop, self.cat(), subname = self.decode_val(val))
@@ -334,8 +349,9 @@ class EventUnknow(EventStartStopMulti):
             if self.name()[0] == 'E':
                 trace_ctx.trace_out.simple_event2(time, self.name(), self.decode_val(val), cat = self.cat())
             else:
-                trace_ctx.trace_out.simple_event2(time, self.name(), val)
+                trace_ctx.trace_out.simple_event2(time, self.name(), val, cat = self.cat())
     def end(self, trace_ctx, time):
+        super().end(trace_ctx, time)
         if self.is_started:
             trace_ctx.trace_out.simple_event(time, self.name(), False, self.cat(), None)
             self.is_started = False
@@ -468,6 +484,10 @@ class EventProc(EventType):
 class BatteryStats:
 
     def event_decode_val_pool(self, val):
+        #in last version of android not every values use string pool
+        #there can be evt=number:""
+        if ':' in val:
+            return val.replace("\"", "")
         key = int(val)
         return f"{self.pool[key][0]}:{self.pool[key][1][1:-1]}"
 
@@ -516,6 +536,7 @@ class BatteryStats:
         self.events = {
                     'r' : EventRun('running', 1.0, cat = 'running'), #no args
                     's' : EventStartStopSingle('sensor', 1.3, cat = 'sensors'),
+                    'Esc' : EventStartStopMultiByName('sensors', 1.3, cat = 'sensors_hal', decode_val = self.event_decode_val_pool),
                     'g' : EventStartStopSingle('gps', 1.3, cat = 'sensors'),
                     'Gss' : EventState('gps quality', None, 1.3, cat = 'sensors', decode_val = self.event_decode_val_gnss_qual),
                     'a' : EventStartStopSingle('audio', 1.3, cat = 'sensors'),
@@ -591,6 +612,7 @@ class BatteryStats:
         return self.events[key]
 
     def end_events(self, time):
+        print(f"finish events {self.events}", file=sys.stderr)
         for key in self.events:
             self.events[key].end(self.trace_ctx, time)
         self.trace_ctx.reset()
@@ -677,6 +699,15 @@ class BatteryStats:
                     try:
                         while True:
                             element = next(iterator)
+                            #in last version of android not every values use string pool
+                            #there can be evt=number:""
+                            quote_count = element.count('\"')
+                            #merge ',' between '"'
+                            while quote_count == 1:
+                                element = element + "," + next(iterator)
+                                quote_count = element.count('\"')
+                                print(f"{quote_count}", file=sys.stderr)
+
                             date = datetime.datetime.fromtimestamp(utctime/1000000, datetime.timezone(datetime.timedelta(minutes=0)))
                             print(f"time:{utctime} event:{element} {date} {line}", file=sys.stderr)
 
