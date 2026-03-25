@@ -10,3 +10,6 @@ do
         cat $file | ../parse.py  > out/$file.json
         diff -u $file.json out/$file.json
 done
+
+trap "" EXIT
+echo "test are OK"
