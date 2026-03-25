@@ -22,7 +22,7 @@ class IdAllocator():
         new_id = lambda x: x + 1
 
         self.ids_in_use = set()
-        self.ids_free = set()
+        self.ids_free = list()
         self.new_id = new_id
         self.last_id = 0
 
@@ -38,7 +38,7 @@ class IdAllocator():
     def release_id(self, the_id):
         if the_id in self.ids_in_use:
             self.ids_in_use.remove(the_id)
-            self.ids_free.add(the_id)
+            self.ids_free.append(the_id)
         else:
             assert(1)
 
