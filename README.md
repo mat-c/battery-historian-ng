@@ -10,9 +10,12 @@ generate a perfetto json file from a bugreport
 
 open `my_br.zip.json` in https://ui.perfetto.dev
 
+Use "Set timestamp and duration format" and select UTC to have real utc date
+
 ## example
 
-open tests/pixel7\_android16.txt.json
+open test trace with this link
+https://ui.perfetto.dev/#!/?url=https://raw.githubusercontent.com/mat-c/battery-historian-ng/refs/heads/main/tests/pixel7_android16.txt.json
 
 ## tests
 
